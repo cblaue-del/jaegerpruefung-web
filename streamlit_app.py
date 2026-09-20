@@ -147,12 +147,27 @@ def show_start_screen(conn):
 
     kategorien = ["Alle"] + db.list_categories(conn)
     kategorie = st.selectbox("Kategorie", kategorien, key="start_kategorie")
+
+    kat_filter = None if kategorie == "Alle" else kategorie
+    anzahl_in_kategorie = len(db.get_questions(conn, kategorie=kat_filter))
+    st.caption(f"{anzahl_in_kategorie} Fragen in dieser Auswahl")
+
     shuffle = st.checkbox("Zufällige Reihenfolge", value=True, key="start_shuffle")
+    limit = st.number_input(
+        "Maximale Anzahl Fragen (0 = alle)",
+        min_value=0,
+        max_value=total,
+        value=0,
+        step=1,
+        key="start_limit",
+        help="Für eine kurze Runde die Anzahl begrenzen – es wird dann eine "
+        "zufällige Auswahl aus der gewählten Kategorie gezogen.",
+    )
 
-    st.button("Start", type="primary", on_click=_start_quiz, args=(conn, kategorie, shuffle))
+    st.button("Start", type="primary", on_click=_start_quiz, args=(conn, kategorie, shuffle, limit))
 
 
-def _start_quiz(conn, kategorie, shuffle):
+def _start_quiz(conn, kategorie, shuffle, limit):
     kat = None if kategorie == "Alle" else kategorie
     fragen = db.get_questions(conn, kategorie=kat)
     if not fragen:
@@ -160,6 +175,10 @@ def _start_quiz(conn, kategorie, shuffle):
         st.session_state.screen = "start"
         st.toast("Für diese Auswahl sind keine Fragen vorhanden.")
         return
+    if limit and 0 < limit < len(fragen):
+        fragen = random.sample(fragen, limit)
+        if not shuffle:
+            fragen.sort(key=lambda f: f["id"])
     st.session_state.session = QuizSession(fragen, shuffle=shuffle)
     st.session_state.answer_order = {}
     st.session_state.screen = "quiz"
