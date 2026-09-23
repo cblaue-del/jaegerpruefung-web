@@ -49,6 +49,10 @@ def bilder_dir():
     return os.path.join(HIER, "bilder")
 
 
+def audio_dir():
+    return os.path.join(HIER, "audio")
+
+
 def resource_path(name):
     return os.path.join(HIER, name)
 
@@ -212,6 +216,14 @@ def _zeige_bild(dateiname):
         st.caption(f"(Bild konnte nicht geladen werden: {dateiname})")
 
 
+def _spiele_audio(dateiname):
+    pfad = os.path.join(audio_dir(), dateiname)
+    if not os.path.isfile(pfad):
+        st.caption(f"(Audio nicht gefunden: {dateiname})")
+        return
+    st.audio(pfad, format="audio/mp3")
+
+
 def _antwort_label(position, antwort, correct_letters, selected_letters, checked):
     letter = antwort["letter"]
     label = f"{chr(65 + position)}) {antwort['text']}"
@@ -291,6 +303,9 @@ def show_question_screen(conn):
 
     if q.get("bild"):
         _zeige_bild(q["bild"])
+
+    if q.get("audio"):
+        _spiele_audio(q["audio"])
 
     if not st.session_state.revealed:
         st.button("Antworten anzeigen", type="primary", on_click=_reveal)

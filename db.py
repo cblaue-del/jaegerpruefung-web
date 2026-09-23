@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS questions (
     erlaeuterung TEXT DEFAULT '',
     kategorie TEXT DEFAULT '',
     bild TEXT DEFAULT '',
-    typ TEXT DEFAULT 'mc'
+    typ TEXT DEFAULT 'mc',
+    audio TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS answers (
@@ -55,6 +56,7 @@ def init_db(conn):
     conn.commit()
     _migrate_add_column(conn, "bild", "TEXT DEFAULT ''")
     _migrate_add_column(conn, "typ", "TEXT DEFAULT 'mc'")
+    _migrate_add_column(conn, "audio", "TEXT DEFAULT ''")
 
 
 def _migrate_add_column(conn, spalte, definition):
@@ -81,15 +83,54 @@ def _read_rows(path):
     return rows
 
 
-def import_excel(conn, path, bilder_zielordner=None):
+def excel_fragen_set(path):
+    """Liest nur die Fragetexte (Spalte 'Frage') aus einer Excel-Datei ein,
+    ohne die Datenbank zu verändern. Nützlich, um vor einem Sync zu prüfen,
+    welche vorhandenen Fragen in der Datei fehlen (und damit beim
+    Synchronisieren entfernt würden)."""
+    path = Path(path)
+    if not path.exists():
+        raise ImportError_(f"Datei nicht gefunden: {path}")
+    rows = _read_rows(path)
+    frages = set()
+    for row in rows:
+        if row is None or all(v in (None, "") for v in row):
+            continue
+        frage = (row[0] or "").strip()
+        if frage:
+            frages.add(frage)
+    return frages
+
+
+def preview_sync_excel(conn, path):
+    """Vergleicht die Fragen in der Excel-Datei mit der Datenbank, OHNE etwas
+    zu ändern. Rückgabe: dict mit 'werden_entfernt' (Liste von Fragetexten,
+    die in der DB stehen, aber nicht mehr in der Excel-Datei vorkommen) und
+    'anzahl_excel' (Gesamtzahl Fragen in der Excel-Datei)."""
+    excel_frages = excel_fragen_set(path)
+    db_frages = {r["frage"] for r in conn.execute("SELECT frage FROM questions").fetchall()}
+    werden_entfernt = sorted(db_frages - excel_frages)
+    return {"werden_entfernt": werden_entfernt, "anzahl_excel": len(excel_frages)}
+
+
+def import_excel(conn, path, bilder_zielordner=None, audio_zielordner=None, delete_missing=False):
     """Importiert/aktualisiert Fragen aus einer Excel-Datei.
 
     Falls eine Zeile in der Spalte 'Bild' einen Dateinamen enthält, wird die
     zugehörige Bilddatei aus dem Unterordner 'bilder' neben der Excel-Datei
     gesucht und (wenn bilder_zielordner angegeben ist) dorthin kopiert, damit
-    die App sie unabhängig vom Speicherort der Excel-Datei findet.
+    die App sie unabhängig vom Speicherort der Excel-Datei findet. Analog
+    dazu wird eine Datei in der Spalte 'Audio' aus dem Unterordner 'audio'
+    gesucht und (wenn audio_zielordner angegeben ist) dorthin kopiert.
 
-    Rückgabe: dict mit Zählern (neu, aktualisiert, uebersprungen, fehler-Liste).
+    Ist delete_missing=True (Synchronisieren statt reinem Import), werden am
+    Ende zusätzlich alle Fragen aus der Datenbank gelöscht, deren Fragetext
+    nicht (mehr) in der Excel-Datei vorkommt – zusammen mit ihren Antworten
+    und ihrer Statistik (ON DELETE CASCADE). Standardmäßig (False) wird wie
+    bisher nie gelöscht, nur ergänzt/aktualisiert.
+
+    Rückgabe: dict mit Zählern (neu, aktualisiert, uebersprungen, geloescht-
+    Liste, fehler-Liste).
     """
     path = Path(path)
     if not path.exists():
@@ -97,20 +138,24 @@ def import_excel(conn, path, bilder_zielordner=None):
 
     rows = _read_rows(path)
     bilder_quellordner = path.parent / "bilder"
+    audio_quellordner = path.parent / "audio"
 
     neu = 0
     aktualisiert = 0
     uebersprungen = 0
     fehler = []
+    gesehene_fragen = set()
 
     cur = conn.cursor()
     for idx, row in enumerate(rows, start=2):  # Excel-Zeilennummer für Fehlermeldungen
         if row is None or all(v in (None, "") for v in row):
             continue
 
-        # Auf 13 Spalten auffüllen, falls Zeile kürzer ist
-        row = list(row) + [None] * (13 - len(row))
-        (frage, bild, a_a, a_b, a_c, a_d, r_a, r_b, r_c, r_d, erlaeuterung, kategorie, fragetyp) = row[:13]
+        # Auf 14 Spalten auffüllen, falls Zeile kürzer ist (Audio ist die
+        # neue, optionale 14. Spalte – ans Ende gehängt, damit bestehende
+        # Excel-Dateien nicht umsortiert werden müssen)
+        row = list(row) + [None] * (14 - len(row))
+        (frage, bild, a_a, a_b, a_c, a_d, r_a, r_b, r_c, r_d, erlaeuterung, kategorie, fragetyp, audio) = row[:14]
 
         frage = (frage or "").strip()
         if not frage:
@@ -133,6 +178,21 @@ def import_excel(conn, path, bilder_zielordner=None):
                 ziel = Path(bilder_zielordner) / bild
                 if quelle.resolve() != ziel.resolve():
                     shutil.copyfile(quelle, ziel)
+
+        audio = (audio or "").strip()
+        if audio:
+            quelle_audio = audio_quellordner / audio
+            if not quelle_audio.exists():
+                fehler.append(
+                    f"Zeile {idx}: Audiodatei '{audio}' nicht gefunden in '{audio_quellordner}' "
+                    "– Frage wird ohne Audio importiert."
+                )
+                audio = ""
+            elif audio_zielordner:
+                os.makedirs(audio_zielordner, exist_ok=True)
+                ziel_audio = Path(audio_zielordner) / audio
+                if quelle_audio.resolve() != ziel_audio.resolve():
+                    shutil.copyfile(quelle_audio, ziel_audio)
 
         antworten = {
             "A": (a_a or "").strip(),
@@ -171,6 +231,7 @@ def import_excel(conn, path, bilder_zielordner=None):
 
         erlaeuterung = (erlaeuterung or "").strip()
         kategorie = (kategorie or "").strip()
+        gesehene_fragen.add(frage)
 
         existing = cur.execute(
             "SELECT id FROM questions WHERE frage = ?", (frage,)
@@ -179,15 +240,15 @@ def import_excel(conn, path, bilder_zielordner=None):
         if existing:
             qid = existing["id"]
             cur.execute(
-                "UPDATE questions SET erlaeuterung = ?, kategorie = ?, bild = ?, typ = ? WHERE id = ?",
-                (erlaeuterung, kategorie, bild, typ, qid),
+                "UPDATE questions SET erlaeuterung = ?, kategorie = ?, bild = ?, typ = ?, audio = ? WHERE id = ?",
+                (erlaeuterung, kategorie, bild, typ, audio, qid),
             )
             cur.execute("DELETE FROM answers WHERE question_id = ?", (qid,))
             aktualisiert += 1
         else:
             cur.execute(
-                "INSERT INTO questions (frage, erlaeuterung, kategorie, bild, typ) VALUES (?, ?, ?, ?, ?)",
-                (frage, erlaeuterung, kategorie, bild, typ),
+                "INSERT INTO questions (frage, erlaeuterung, kategorie, bild, typ, audio) VALUES (?, ?, ?, ?, ?, ?)",
+                (frage, erlaeuterung, kategorie, bild, typ, audio),
             )
             qid = cur.lastrowid
             cur.execute(
@@ -204,11 +265,20 @@ def import_excel(conn, path, bilder_zielordner=None):
                 (qid, letter, text, 1 if richtig[letter] else 0),
             )
 
+    geloescht = []
+    if delete_missing:
+        vorhandene = cur.execute("SELECT id, frage FROM questions").fetchall()
+        for row in vorhandene:
+            if row["frage"] not in gesehene_fragen:
+                cur.execute("DELETE FROM questions WHERE id = ?", (row["id"],))
+                geloescht.append(row["frage"])
+
     conn.commit()
     return {
         "neu": neu,
         "aktualisiert": aktualisiert,
         "uebersprungen": uebersprungen,
+        "geloescht": geloescht,
         "fehler": fehler,
         "gesamt": neu + aktualisiert,
     }
@@ -252,6 +322,7 @@ def get_questions(conn, kategorie=None, nur_falsche=False):
                 "kategorie": fr["kategorie"],
                 "bild": fr["bild"] or "",
                 "typ": fr["typ"] or "mc",
+                "audio": fr["audio"] or "",
                 "antworten": [
                     {"letter": a["letter"], "text": a["text"], "is_correct": bool(a["is_correct"])}
                     for a in antworten
