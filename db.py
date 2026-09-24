@@ -292,13 +292,24 @@ def list_categories(conn):
 
 
 def get_questions(conn, kategorie=None, nur_falsche=False):
-    """Liefert Fragen (mit Antworten) als Liste von dicts."""
+    """Liefert Fragen (mit Antworten) als Liste von dicts.
+
+    kategorie kann eine einzelne Kategorie (String), eine Liste/ein Set
+    mehrerer Kategorien, oder None/leer sein (= keine Einschränkung, alle
+    Kategorien)."""
     sql = "SELECT * FROM questions"
     params = []
     clauses = []
     if kategorie:
-        clauses.append("kategorie = ?")
-        params.append(kategorie)
+        if isinstance(kategorie, (list, tuple, set)):
+            gewaehlt = [k for k in kategorie if k]
+            if gewaehlt:
+                platzhalter = ",".join("?" for _ in gewaehlt)
+                clauses.append(f"kategorie IN ({platzhalter})")
+                params.extend(gewaehlt)
+        else:
+            clauses.append("kategorie = ?")
+            params.append(kategorie)
     if nur_falsche:
         clauses.append(
             "id IN (SELECT question_id FROM stats WHERE zuletzt_falsch = 1)"

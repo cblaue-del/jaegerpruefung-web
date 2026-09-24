@@ -149,11 +149,13 @@ def show_start_screen(conn):
 
     st.caption(f"{total} Fragen in der Datenbank")
 
-    kategorien = ["Alle"] + db.list_categories(conn)
-    kategorie = st.selectbox("Kategorie", kategorien, key="start_kategorie")
+    kategorien = db.list_categories(conn)
+    gewaehlte_kategorien = st.multiselect(
+        "Kategorie(n)", kategorien, key="start_kategorien",
+        help="Keine Auswahl = alle Kategorien. Es können auch mehrere gleichzeitig gewählt werden.",
+    )
 
-    kat_filter = None if kategorie == "Alle" else kategorie
-    anzahl_in_kategorie = len(db.get_questions(conn, kategorie=kat_filter))
+    anzahl_in_kategorie = len(db.get_questions(conn, kategorie=gewaehlte_kategorien))
     st.caption(f"{anzahl_in_kategorie} Fragen in dieser Auswahl")
 
     shuffle = st.checkbox("Zufällige Reihenfolge", value=True, key="start_shuffle")
@@ -165,15 +167,17 @@ def show_start_screen(conn):
         step=1,
         key="start_limit",
         help="Für eine kurze Runde die Anzahl begrenzen – es wird dann eine "
-        "zufällige Auswahl aus der gewählten Kategorie gezogen.",
+        "zufällige Auswahl aus der gewählten Kategorie/Kategorien gezogen.",
     )
 
-    st.button("Start", type="primary", on_click=_start_quiz, args=(conn, kategorie, shuffle, limit))
+    st.button(
+        "Start", type="primary", on_click=_start_quiz,
+        args=(conn, gewaehlte_kategorien, shuffle, limit),
+    )
 
 
-def _start_quiz(conn, kategorie, shuffle, limit):
-    kat = None if kategorie == "Alle" else kategorie
-    fragen = db.get_questions(conn, kategorie=kat)
+def _start_quiz(conn, kategorien, shuffle, limit):
+    fragen = db.get_questions(conn, kategorie=kategorien)
     if not fragen:
         st.session_state.pruef_hinweis = None
         st.session_state.screen = "start"
