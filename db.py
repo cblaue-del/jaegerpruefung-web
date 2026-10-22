@@ -72,6 +72,17 @@ class ImportError_(Exception):
     pass
 
 
+def _text(v):
+    """Wandelt einen Excel-Zellwert sicher in bereinigten Text um.
+    Zahlen (z. B. 0, 7, 14) werden zu '0', '7', '14' – auch die 0 bleibt
+    erhalten. Ganzzahlige Floats (7.0) werden zu '7'. None wird zu ''."""
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return str(v).strip()
+
+
 def _read_rows(path):
     wb = openpyxl.load_workbook(path, data_only=True)
     if "Fragen" not in wb.sheetnames:
@@ -96,7 +107,7 @@ def excel_fragen_set(path):
     for row in rows:
         if row is None or all(v in (None, "") for v in row):
             continue
-        frage = (row[0] or "").strip()
+        frage = _text(row[0])
         if frage:
             frages.add(frage)
     return frages
@@ -157,14 +168,14 @@ def import_excel(conn, path, bilder_zielordner=None, audio_zielordner=None, dele
         row = list(row) + [None] * (14 - len(row))
         (frage, bild, a_a, a_b, a_c, a_d, r_a, r_b, r_c, r_d, erlaeuterung, kategorie, fragetyp, audio) = row[:14]
 
-        frage = (frage or "").strip()
+        frage = _text(frage)
         if not frage:
             uebersprungen += 1
             continue
 
-        typ = "text" if (fragetyp or "").strip().lower().startswith("text") else "mc"
+        typ = "text" if _text(fragetyp).lower().startswith("text") else "mc"
 
-        bild = (bild or "").strip()
+        bild = _text(bild)
         if bild:
             quelle = bilder_quellordner / bild
             if not quelle.exists():
@@ -179,7 +190,7 @@ def import_excel(conn, path, bilder_zielordner=None, audio_zielordner=None, dele
                 if quelle.resolve() != ziel.resolve():
                     shutil.copyfile(quelle, ziel)
 
-        audio = (audio or "").strip()
+        audio = _text(audio)
         if audio:
             quelle_audio = audio_quellordner / audio
             if not quelle_audio.exists():
@@ -195,10 +206,10 @@ def import_excel(conn, path, bilder_zielordner=None, audio_zielordner=None, dele
                     shutil.copyfile(quelle_audio, ziel_audio)
 
         antworten = {
-            "A": (a_a or "").strip(),
-            "B": (a_b or "").strip(),
-            "C": (a_c or "").strip(),
-            "D": (a_d or "").strip(),
+            "A": _text(a_a),
+            "B": _text(a_b),
+            "C": _text(a_c),
+            "D": _text(a_d),
         }
         richtig_raw = {"A": r_a, "B": r_b, "C": r_c, "D": r_d}
 
@@ -229,8 +240,8 @@ def import_excel(conn, path, bilder_zielordner=None, audio_zielordner=None, dele
                 uebersprungen += 1
                 continue
 
-        erlaeuterung = (erlaeuterung or "").strip()
-        kategorie = (kategorie or "").strip()
+        erlaeuterung = _text(erlaeuterung)
+        kategorie = _text(kategorie)
         gesehene_fragen.add(frage)
 
         existing = cur.execute(
@@ -297,8 +308,13 @@ def get_questions(conn, kategorie=None, nur_falsche=False):
     params = []
     clauses = []
     if kategorie:
-        clauses.append("kategorie = ?")
-        params.append(kategorie)
+        # Einzelne Kategorie (str) oder Mehrfachauswahl (Liste/Tuple/Set)
+        if isinstance(kategorie, str):
+            kategorie = [kategorie]
+        kategorie = list(kategorie)
+        platzhalter = ",".join("?" for _ in kategorie)
+        clauses.append(f"kategorie IN ({platzhalter})")
+        params.extend(kategorie)
     if nur_falsche:
         clauses.append(
             "id IN (SELECT question_id FROM stats WHERE zuletzt_falsch = 1)"
